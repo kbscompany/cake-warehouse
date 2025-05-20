@@ -1,0 +1,7 @@
+ssh -i "streamlit-key.pem" ec2-user@54.162.51.174  command to connect to the aws instance
+
+scp -i "streamlit-key.pem" warehouse.py ec2-user@54.162.51.174:/home/ec2-user/cake_warehouse/ command to upload file
+
+docker run --name mysql-server -e MYSQL_ROOT_PASSWORD=Kbs@2024$ -p 3306:3306 -d mysql:8.0 RootPassword for MySQL
+
+git push origin main                      this to gitpush files to server

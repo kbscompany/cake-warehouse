@@ -1,0 +1,10 @@
+streamlit=1.32.0
+pandas=2.2.2
+io
+zipfile
+matplotlib
+hashlib
+python-dotenv==1.0.0
+mysql-connector-python==8.3.0
+openpyxl
+plotly

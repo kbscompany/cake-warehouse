@@ -1,14 +1,17 @@
 import streamlit as st
-st.set_page_config(page_title="KB's Cake Studio", layout='wide')  # Must be first Streamlit command
+st.set_page_config(page_title="KB's Cake Studio", layout='wide')
+
 import pandas as pd
 from datetime import datetime
-import sqlite3
 import io
-import os
 from io import BytesIO
 import zipfile
 import matplotlib.pyplot as plt
 import hashlib
+import socket
+import os
+from dotenv import load_dotenv
+
 from Add_Items import add_cake, add_sub_recipe, add_ingredient
 from Manage_Items import manage_sub_recipes, manage_cakes, manage_ingredients
 from Quick_add import quick_add_cake, quick_add_sub_recipe
@@ -16,13 +19,14 @@ from Add_stock import update_stock
 from view_cakes import view_costs, view_all_cakes
 from Batch import batch_production
 from Warehouse_functions import create_transfer_order_page, create_kitchen_batch_log_table, receive_transfer_order_page, manage_categories
-from Warehouse_Reports import view_warehouse, transfer_dashboard_page, transfer_visual_dashboard_page, transfer_order_history_page, view_warehouse, stock_report
+from Warehouse_Reports import view_warehouse, transfer_dashboard_page, transfer_visual_dashboard_page, transfer_order_history_page, stock_report
+
 import sys
 sys.path.append('/home/ec2-user/.config/cake_warehouse')
 from auth_secrets import HASHED_PASSWORD
+from db import get_connection
 
-
-
+load_dotenv()
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -45,67 +49,107 @@ def check_password():
     else:
         return True
 
-
-# ---------- DATABASE SETUP ----------
-DB_PATH = 'bakery.db'
-
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
     c = conn.cursor()
 
-    c.execute('''CREATE TABLE IF NOT EXISTS ingredients (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, price_per_unit REAL, unit TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS sub_recipes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS sub_recipe_ingredients (id INTEGER PRIMARY KEY AUTOINCREMENT, sub_recipe_id INTEGER, ingredient_id INTEGER, quantity REAL, FOREIGN KEY(sub_recipe_id) REFERENCES sub_recipes(id), FOREIGN KEY(ingredient_id) REFERENCES ingredients(id))''')
-    c.execute('''CREATE TABLE IF NOT EXISTS cakes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS cake_ingredients (id INTEGER PRIMARY KEY AUTOINCREMENT, cake_id INTEGER, ingredient_or_subrecipe_id INTEGER, is_subrecipe BOOLEAN, quantity REAL, FOREIGN KEY(cake_id) REFERENCES cakes(id))''')
-    c.execute('''CREATE TABLE IF NOT EXISTS sub_recipe_nested (id INTEGER PRIMARY KEY AUTOINCREMENT, parent_sub_recipe_id INTEGER, sub_recipe_id INTEGER, quantity REAL, FOREIGN KEY(parent_sub_recipe_id) REFERENCES sub_recipes(id), FOREIGN KEY(sub_recipe_id) REFERENCES sub_recipes(id))''')
-    c.execute('''CREATE TABLE IF NOT EXISTS warehouse (ingredient_id INTEGER PRIMARY KEY, quantity REAL DEFAULT 0, last_updated TEXT, FOREIGN KEY(ingredient_id) REFERENCES ingredients(id))''')
-    c.execute('''CREATE TABLE IF NOT EXISTS stock_movements (id INTEGER PRIMARY KEY AUTOINCREMENT, ingredient_id INTEGER, change REAL, reason TEXT, timestamp TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(ingredient_id) REFERENCES ingredients(id))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS ingredients (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) UNIQUE,
+        price_per_unit DECIMAL(10,2),
+        unit VARCHAR(50)
+    )''')
 
-    def ensure_extended_warehouse_schema():
-        # Nested to ensure full schema update
-        c.execute('''CREATE TABLE IF NOT EXISTS inventory_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-        c.execute("PRAGMA table_info(warehouse)")
-        cols = [row[1] for row in c.fetchall()]
-        if "category_id" not in cols:
-            c.execute("ALTER TABLE warehouse ADD COLUMN category_id INTEGER REFERENCES inventory_categories(id)")
-        if "par_level" not in cols:
-            c.execute("ALTER TABLE warehouse ADD COLUMN par_level REAL DEFAULT 0")
+    c.execute('''CREATE TABLE IF NOT EXISTS sub_recipes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) UNIQUE
+    )''')
 
-    ensure_extended_warehouse_schema()
+    c.execute('''CREATE TABLE IF NOT EXISTS sub_recipe_ingredients (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        sub_recipe_id INT,
+        ingredient_id INT,
+        quantity DECIMAL(10,2),
+        FOREIGN KEY(sub_recipe_id) REFERENCES sub_recipes(id),
+        FOREIGN KEY(ingredient_id) REFERENCES ingredients(id)
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS cakes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) UNIQUE
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS cake_ingredients (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        cake_id INT,
+        ingredient_or_subrecipe_id INT,
+        is_subrecipe BOOLEAN,
+        quantity DECIMAL(10,2),
+        FOREIGN KEY(cake_id) REFERENCES cakes(id)
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS sub_recipe_nested (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        parent_sub_recipe_id INT,
+        sub_recipe_id INT,
+        quantity DECIMAL(10,2),
+        FOREIGN KEY(parent_sub_recipe_id) REFERENCES sub_recipes(id),
+        FOREIGN KEY(sub_recipe_id) REFERENCES sub_recipes(id)
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS warehouse (
+        ingredient_id INT PRIMARY KEY,
+        quantity DECIMAL(10,2) DEFAULT 0,
+        last_updated DATETIME,
+        category_id INT,
+        par_level DECIMAL(10,2),
+        FOREIGN KEY(ingredient_id) REFERENCES ingredients(id)
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS stock_movements (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        ingredient_id INT,
+        `change` DECIMAL(10,2),
+        reason TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(ingredient_id) REFERENCES ingredients(id)
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS inventory_categories (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) UNIQUE
+    )''')
+
     conn.commit()
     conn.close()
 
-
-# ---------- MAIN APP ----------
 def main():
     st.image('logo.png', width=200)
     st.title('KB’s Cake Studio')
+
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DATABASE();")
+        db = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM ingredients;")
+        count = cursor.fetchone()[0]
+
+        st.success(f"✅ Connected to MySQL DB: `{db}` on host `{os.getenv('MYSQL_HOST')}`")
+        st.info(f"Ingredients count: {count}")
+        st.text(f"Server: {socket.gethostname()}")
+    except Exception as e:
+        st.error(f"❌ MySQL connection failed: {e}")
+
     init_db()
 
     menu = [
-        'Quick Add Cake',
-        'Add Ingredient',
-        'Add Sub-Recipe',
-        'Quick Add Sub-Recipe',
-        'Add Cake',
-        'View Costs',
-        'Batch Production',
-        'Manage Ingredients',
-        'Manage Sub-Recipes',
-        'Manage Cakes',
-        'Cake Report',
-        'Warehouse Overview',
-        'Manage Categories',
-        'Update Stock',
-        'Stock Report',
-        'Stock Movements',
-        'Transfer Orders',
-        'Receive Transfers',
-        'Transfer History',
-        'Transfer Dashboard',
-        'Transfer Charts',
-        'Kitchen Production'
+        'Quick Add Cake', 'Add Ingredient', 'Add Sub-Recipe', 'Quick Add Sub-Recipe', 'Add Cake',
+        'View Costs', 'Batch Production', 'Manage Ingredients', 'Manage Sub-Recipes', 'Manage Cakes',
+        'Cake Report', 'Warehouse Overview', 'Manage Categories', 'Update Stock', 'Stock Report',
+        'Stock Movements', 'Transfer Orders', 'Receive Transfers', 'Transfer History',
+        'Transfer Dashboard', 'Transfer Charts', 'Kitchen Production'
     ]
 
     choice = st.sidebar.selectbox('Navigation', menu)
@@ -157,8 +201,6 @@ def main():
     elif choice == 'Transfer Charts':
         transfer_visual_dashboard_page()
 
-
-# ---------- ENTRY POINT ----------
 if __name__ == '__main__':
     if check_password():
         main()
